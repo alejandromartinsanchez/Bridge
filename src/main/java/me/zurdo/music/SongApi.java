@@ -1,16 +1,24 @@
 package me.zurdo.music;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.http.Context;
 import io.javalin.http.UnauthorizedResponse;
 import me.zurdo.Database;
 import me.zurdo.Utils;
 import me.zurdo.auth.Jwt;
+import me.zurdo.auth.User;
 import org.json.JSONObject;
-
 import java.io.IOException;
 import java.util.List;
 
 public class SongApi {
+
+    /**
+     * Endpoint para manejar la seguridad de las operaciones de canciones
+     * Verifica si el token JWT es válido y si el usuario tiene el rol de 'ARTIST'
+     * @param ctx Contexto de la solicitud HTTP
+     */
 
     public static void handleSecurity(Context ctx) {
         String token = Utils.getTokenFromHeader(ctx);
@@ -19,7 +27,7 @@ public class SongApi {
 
 
         boolean isArtist = Database.getJdbi().withHandle(handle ->
-                handle.createQuery("SELECT id FROM users WHERE id = :id AND role = ARTIST")
+                handle.createQuery("SELECT id FROM users WHERE id = :id AND role = 'ARTIST'")
                         .bind("id", id)
                         .mapTo(Long.class)
                         .findOne().isPresent()
@@ -32,17 +40,9 @@ public class SongApi {
     }
 
     /**
-     * HTTP POST Request to /api/songs
-     * Creates a song.
-     * <p>
-     * JSON Body Parameters:
-     * - name: The name of the song.
-     * - artist: The ID of the artist.
-     * - album: The ID of the album.
-     * - duration: The duration of the song in seconds.
-     * - link: The YouTube link of the song.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para crear una nueva canción
+     * Verifica que el usuario tenga los permisos necesarios y luego inserta los datos de la canción en la base de datos
+     * @param ctx Contexto de la solicitud HTTP
      */
     public static void createSong(Context ctx) {
         handleSecurity(ctx);
@@ -51,7 +51,8 @@ public class SongApi {
         String name = body.getString("name");
         String lyrics = body.getString("lyrics");
         long artist = body.getLong("artist");
-        long album = body.getLong("album");
+        // Manejar "album" como nulo si no está presente
+        Long album = body.has("album") && !body.isNull("album") ? body.getLong("album") : null;
         String link = body.getString("link");
 
         Song song = Database.getJdbi().withHandle(handle ->
@@ -72,11 +73,11 @@ public class SongApi {
         ctx.json(song);
     }
 
+
     /**
-     * HTTP GET Request to /api/songs
-     * Retrieves a list of all songs.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para obtener todas las canciones almacenadas
+     * Recupera y devuelve la lista completa de canciones en formato JSON
+     * @param ctx Contexto de la solicitud HTTP
      */
     public static void getSongs(Context ctx) {
         List<Song> songs = Database.getJdbi().withHandle(handle -> handle.createQuery("""
@@ -90,13 +91,9 @@ public class SongApi {
     }
 
     /**
-     * HTTP GET Request to /api/songs/{id}
-     * Retrieves a song by its ID.
-     * <p>
-     * Path Parameters:
-     * - id: The ID of the song to retrieve.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para obtener los detalles de una canción específica por su ID
+     * Devuelve un error 404 si la canción no se encuentra
+     * @param ctx Contexto de la solicitud HTTP
      */
     public static void getSong(Context ctx) {
         long id = Utils.getIdFromPath(ctx);
@@ -119,126 +116,126 @@ public class SongApi {
         }
     }
 
-
     /**
-     * HTTP GET Request to /api/songs
-     * Retrieves a list of all songs.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para obtener las canciones asociadas a un usuario específico
+     * Recupera todas las canciones creadas por el usuario autenticado
+     * @param ctx Contexto de la solicitud HTTP
      */
     public static void getSongsFromUser(Context ctx) {
-        handleSecurity(ctx);
-        System.out.println("Getting songs");
+        User user = Utils.getUserfromToken(ctx);
         List<Song> songs = Database.getJdbi().withHandle(handle -> handle.createQuery("""
                         SELECT id, name, lyrics, artist, album, link
                         FROM songs
+                        WHERE artist = :id
                         """)
+                .bind("id", user.id())
                 .mapTo(Song.class)
                 .list());
 
         ctx.json(songs);
     }
 
-
-
     /**
-     * HTTP DELETE Request to /api/songs/{id}
-     * Deletes a song by its ID.
-     *
-     * Query Parameters:
-     * - id: The ID of the song to delete.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para eliminar canciones específicas
+     * Verifica que el usuario sea el propietario de las canciones antes de eliminarlas
+     * @param ctx Contexto de la solicitud HTTP
      */
-    public static void deleteSong(Context ctx) {
-        handleSecurity(ctx);
-        long id = Utils.getIdFromPath(ctx);
+    public static void deleteSongs(Context ctx) {
+        User user = Utils.getUserfromToken(ctx);
+
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<Long> ids;
+        try {
+            ids = objectMapper.readValue(ctx.body(), new TypeReference<List<Long>>() {});
+        } catch (IOException e) {
+            ctx.status(400).result("Invalid request body");
+            return;
+        }
+
+        if (ids == null || ids.isEmpty()) {
+            ctx.status(400).result("No song IDs provided");
+            return;
+        }
+
+        for (Long id : ids) {
+            boolean isOwner = Database.getJdbi().withHandle(handle ->
+                    handle.createQuery("SELECT COUNT(*) FROM songs WHERE id = :id AND artist = :userId")
+                            .bind("id", id)
+                            .bind("userId", user.id())
+                            .mapTo(Long.class)
+                            .one() > 0
+            );
+
+            if (!isOwner) {
+                ctx.status(403).result("User is not the owner of one or more songs");
+                return;
+            }
+        }
 
         int deleted = Database.getJdbi().withHandle(handle ->
-                handle.createUpdate("DELETE FROM songs WHERE id = :id")
-                        .bind("id", id)
+                handle.createUpdate("DELETE FROM songs WHERE id IN (<ids>)")
+                        .bindList("ids", ids)
                         .execute()
         );
 
         if (deleted == 0) {
-            ctx.status(404).result("Song not found");
+            ctx.status(404).result("No songs found to delete");
         } else {
             ctx.status(204);
         }
     }
 
     /**
-     * HTTP PATCH Request to /api/songs/{id}
-     * Updates a song by its ID.
-     *
-     * Query Parameters:
-     * - id: The ID of the song to update.
-     * - name (optional): The new name of the song.
-     * - lyrics (optional): The new lyrics of the song.
-     * - artist (optional): The new artist of the song.
-     * - album (optional): The new album of the song.
-     * - duration (optional): The new duration of the song.
-     * - link (optional): The new YouTube link of the song.
-     *
-     * @param ctx the Javalin HTTP context
+     * Endpoint para actualizar los datos de una canción específica
+     * Verifica que el usuario sea el propietario antes de realizar la actualización
+     * @param ctx Contexto de la solicitud HTTP
      */
     public static void updateSong(Context ctx) {
-        handleSecurity(ctx);
+        System.out.println("updateSong");
+        User user = Utils.getUserfromToken(ctx);
         long id = Utils.getIdFromPath(ctx);
+
+        boolean isOwner = Database.getJdbi().withHandle(handle ->
+                handle.createQuery("SELECT COUNT(*) FROM songs WHERE id = :id AND artist = :userId")
+                        .bind("id", id)
+                        .bind("userId", user.id())
+                        .mapTo(Long.class)
+                        .one() > 0
+        );
+
+        if (!isOwner) {
+            throw new UnauthorizedResponse("User is not the owner of the song");
+        }
+
         JSONObject body = new JSONObject(ctx.body());
+        String name = body.getString("name");
+        String lyrics = body.getString("lyrics");
+        Long artist = body.getLong("artist");
+        Long album = body.isNull("album") || body.getLong("album") <= 0 ? null : body.getLong("album");
+        String link = body.getString("link");
 
-        String name = body.optString("name", null);
-        String lyrics = body.optString("lyrics", null);
-        Long artist = body.has("artist") ? body.getLong("artist") : null;
-        Long album = body.has("album") ? body.getLong("album") : null;
-        String link = body.optString("link", null);
-
-        StringBuilder sql = new StringBuilder("UPDATE songs SET ");
-        boolean first = true;
-
-        if (name != null) {
-            sql.append("name = :name");
-            first = false;
-        }
-        if (lyrics != null) {
-            if (!first) sql.append(", ");
-            sql.append("lyrics = :lyrics");
-            first = false;
-        }
-        if (artist != null) {
-            if (!first) sql.append(", ");
-            sql.append("artist = :artist");
-            first = false;
-        }
-        if (album != null) {
-            if (!first) sql.append(", ");
-            sql.append("album = :album");
-            first = false;
-        }
-        if (link != null) {
-            if (!first) sql.append(", ");
-            sql.append("link = :link");
-        }
-        sql.append(" WHERE id = :id");
+        String sql = "UPDATE songs SET name = :name, lyrics = :lyrics, artist = :artist, album = :album, link = :link WHERE id = :id";
 
         Song song = Database.getJdbi().withHandle(handle -> {
-            var update = handle.createUpdate(sql.toString()).bind("id", id);
-            if (name != null) update.bind("name", name);
-            if (lyrics != null) update.bind("lyrics", lyrics);
-            if (artist != null) update.bind("artist", artist);
-            if (album != null) update.bind("album", album);
-            if (link != null) update.bind("link", link);
+            handle.createUpdate(sql)
+                    .bind("id", id)
+                    .bind("name", name)
+                    .bind("lyrics", lyrics)
+                    .bind("artist", artist)
+                    .bind("album", album)
+                    .bind("link", link)
+                    .execute();
 
-            update.execute();
             return handle.createQuery("""
-                            SELECT id, name, lyrics, artist, album, link
-                            FROM songs
-                            WHERE id = :id
-                            """)
+                SELECT id, name, lyrics, artist, album, link
+                FROM songs
+                WHERE id = :id
+                """)
                     .bind("id", id)
                     .mapTo(Song.class)
                     .one();
         });
+
         ctx.json(song);
     }
 }

@@ -13,13 +13,8 @@ import java.util.Map;
 public class LoginApi {
 
     /**
-     * HTTP POST Request to /api/login
-     * Logs in a user.
-     *
-     * JSON Body Parameters:
-     * - username: The username of the user.
-     * - password: The password of the user.
-     *
+     * Endpoint para iniciar sesión de un usuario.
+     * Valida las credenciales proporcionadas y genera un token JWT si son correctas.
      * @param ctx the Javalin HTTP context
      */
     public static void login(Context ctx) {
@@ -60,13 +55,8 @@ public class LoginApi {
     }
 
     /**
-     * HTTP POST Request to /api/register
-     * Registers a new user.
-     *
-     * JSON Body Parameters:
-     * - username: The username of the user.
-     * - password: The password of the user.
-     *
+     * Endpoint para registrar un nuevo usuario.
+     * Almacena las credenciales y otros datos del usuario en la base de datos.
      * @param ctx the Javalin HTTP context
      */
     public static void register(Context ctx) {
@@ -97,9 +87,8 @@ public class LoginApi {
     }
 
     /**
-     * HTTP GET Request to /api/admin/validate
-     * Validates the user's token and returns the user information.
-     *
+     * Endpoint para validar el token JWT de un usuario.
+     * Si el token es válido, devuelve los datos del usuario autenticado.
      * @param ctx the Javalin HTTP context
      */
     public static void validateToken(Context ctx) {
@@ -120,5 +109,23 @@ public class LoginApi {
                 .mapTo(User.class)
                 .one());
         ctx.json(user);
+    }
+
+    /**
+     * Endpoint para obtener el nombre de usuario basado en el ID proporcionado.
+     * Devuelve el nombre de usuario correspondiente al ID recibido.
+     * @param ctx the Javalin HTTP context
+     */
+    public static void getUsername(Context ctx) {
+        long id = Utils.getIdFromPath(ctx);
+        String username = Database.getJdbi().withHandle(handle -> handle.createQuery("""
+                        SELECT username
+                        FROM users
+                        WHERE id = :id
+                        """)
+                .bind("id", id)
+                .mapTo(String.class)
+                .one());
+        ctx.json(username);
     }
 }

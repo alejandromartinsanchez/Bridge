@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "me.zurdo"
@@ -25,6 +26,7 @@ dependencies {
     //añadir utilidades json
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("org.json:json:20240303")
+    implementation("com.google.code.gson:gson:2.8.9")
 
     //BASE DE DATOS
     //añadir jdbi
@@ -36,6 +38,18 @@ dependencies {
     //Autentificación
     implementation("com.auth0:java-jwt:4.4.0")
     implementation("org.mindrot:jbcrypt:0.4")
+}
+
+tasks {
+    build {
+        dependsOn(shadowJar)
+    }
+}
+
+tasks.jar {
+    manifest {
+        attributes("Main-Class" to "me.zurdo.Main")
+    }
 }
 
 tasks.test {
